@@ -29,10 +29,10 @@ use Cake\Routing\Middleware\AssetMiddleware;
 use Cake\Routing\Middleware\RoutingMiddleware;
 
 /**
- * Application setup class.
+ * Clase de configuración de la aplicación.
  *
- * This defines the bootstrapping logic and middleware layers you
- * want to use in your application.
+ * Aquí se define la lógica de inicialización y los middlewares que
+ * se utilizarán en la aplicación.
  *
  * @extends \Cake\Http\BaseApplication<\App\Application>
  */
