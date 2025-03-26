@@ -17,6 +17,8 @@ use Cake\Database\Query\UpdateQuery;
 use Migrations\Config\ConfigInterface;
 use Migrations\Db\Adapter\AdapterInterface;
 use Migrations\Db\Table;
+use Migrations\Db\Table\ForeignKey;
+use Migrations\Db\Table\Index;
 use RuntimeException;
 
 /**
@@ -425,6 +427,28 @@ class BaseMigration implements MigrationInterface
     }
 
     /**
+     * Create a new ForeignKey object.
+     *
+     * @params string|string[] $columns Columns
+     * @return \Migrations\Db\Table\ForeignKey
+     */
+    public function foreignKey(string|array $columns): ForeignKey
+    {
+        return (new ForeignKey())->setColumns($columns);
+    }
+
+    /**
+     * Create a new Index object.
+     *
+     * @params string|string[] $columns Columns
+     * @return \Migrations\Db\Table\Index
+     */
+    public function index(string|array $columns): Index
+    {
+        return (new Index())->setColumns($columns);
+    }
+
+    /**
      * Perform checks on the migration, printing a warning
      * if there are potential problems.
      *
@@ -441,7 +465,7 @@ class BaseMigration implements MigrationInterface
                 if ($io) {
                     $io->out(
                         '<comment>warning</comment> Migration contains both change() and up()/down() methods.' .
-                        ' <warning>Ignoring up() and down()</warning>.'
+                        ' <warning>Ignoring up() and down()</warning>.',
                     );
                 }
             }

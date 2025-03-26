@@ -20,6 +20,7 @@ use Bake\Utility\TemplateRenderer;
 use Cake\Console\Arguments;
 use Cake\Console\ConsoleIo;
 use Cake\Console\ConsoleOptionParser;
+use Cake\Core\Plugin;
 use Cake\Utility\Inflector;
 use Migrations\Util\Util;
 
@@ -105,9 +106,13 @@ abstract class BakeSimpleMigrationCommand extends SimpleBakeCommand
      */
     public function execute(Arguments $args, ConsoleIo $io): ?int
     {
+        if (!Plugin::isLoaded('Bake')) {
+            $io->err('Bake plugin is not loaded. Please load it first to generate a migration.');
+            $this->abort();
+        }
         $this->extractCommonProperties($args);
         $name = $args->getArgumentAt(0);
-        if (empty($name)) {
+        if (!$name) {
             $io->err('You must provide a name to bake a ' . $this->name());
             $this->abort();
         }
@@ -137,8 +142,8 @@ abstract class BakeSimpleMigrationCommand extends SimpleBakeCommand
                 $io->abort(
                     sprintf(
                         'A migration with the name `%s` already exists. Please use a different name.',
-                        $name
-                    )
+                        $name,
+                    ),
                 );
             }
 
@@ -188,7 +193,7 @@ abstract class BakeSimpleMigrationCommand extends SimpleBakeCommand
      */
     protected function getMigrationName(?string $name = null): string
     {
-        if (empty($name)) {
+        if (!$name) {
             /** @psalm-suppress PossiblyNullReference */
             $this->io->abort('Choose a migration name to bake in CamelCase format');
         }
@@ -198,7 +203,7 @@ abstract class BakeSimpleMigrationCommand extends SimpleBakeCommand
 
         if (!preg_match('/^[A-Z]{1}[a-zA-Z0-9]+$/', $name)) {
             /** @psalm-suppress PossiblyNullReference */
-            $this->io->abort('The className is not correct. The className can only contain "A-Z" and "0-9".');
+            $this->io->abort('The className is not correct. The className can only contain "A-Z" and "0-9" and has to start with a letter.');
         }
 
         return $name;
@@ -215,7 +220,7 @@ abstract class BakeSimpleMigrationCommand extends SimpleBakeCommand
         $parser = $this->_setCommonOptions($parser);
 
         $parser->setDescription(
-            'Bake migration class.'
+            'Bake migration class.',
         )->addOption('no-test', [
             'boolean' => true,
             'help' => 'Do not generate a test skeleton.',

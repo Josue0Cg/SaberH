@@ -21,9 +21,13 @@ use Phinx\Db\Table\Column;
 use Phinx\Util\Literal;
 
 /**
- * TODO figure out how to update this for built-in backend.
+ * Migration Table
+ *
+ * This class enhances the phinx provided Table class
+ * with additional CakePHP related logic.
  *
  * @method \Migrations\CakeAdapter getAdapter()
+ * @deprecated 4.6.0 Use \Migrations\Db\Table instead with the builtin backend.
  */
 class Table extends BaseTable
 {
@@ -211,7 +215,7 @@ class Table extends BaseTable
             return isset($primaryKey[$columnDef->getName()]);
         })->toArray();
 
-        if (empty($primaryKeyColumns)) {
+        if (!$primaryKeyColumns) {
             return;
         }
 
@@ -223,7 +227,7 @@ class Table extends BaseTable
 
         $primaryKey = array_flip($primaryKey);
 
-        if (!empty($primaryKey)) {
+        if ($primaryKey) {
             $options['primary_key'] = $primaryKey;
         } else {
             unset($options['primary_key']);

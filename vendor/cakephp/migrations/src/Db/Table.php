@@ -28,11 +28,20 @@ use Migrations\Db\Adapter\AdapterInterface;
 use Migrations\Db\Plan\Intent;
 use Migrations\Db\Plan\Plan;
 use Migrations\Db\Table\Column;
+use Migrations\Db\Table\ForeignKey;
 use Migrations\Db\Table\Index;
 use Migrations\Db\Table\Table as TableValue;
 use RuntimeException;
+use function Cake\Core\deprecationWarning;
 
 /**
+ * Migration Table
+ *
+ * Table instances allow you to define schema changes
+ * to be made on a table. You can manipulate columns,
+ * indexes and foreign keys. You can also manipulate table
+ * data with row operations.
+ *
  * This object is based loosely on: https://api.rubyonrails.org/classes/ActiveRecord/ConnectionAdapters/Table.html.
  */
 class Table
@@ -244,7 +253,7 @@ class Table
             $this->getColumns(),
             function ($column) use ($name) {
                 return $column->getName() === $name;
-            }
+            },
         );
 
         return array_pop($columns);
@@ -337,7 +346,7 @@ class Table
             throw new InvalidArgumentException(sprintf(
                 'An invalid column type "%s" was specified for column "%s".',
                 (string)$action->getColumn()->getType(),
-                (string)$action->getColumn()->getName()
+                (string)$action->getColumn()->getName(),
             ));
         }
 
@@ -479,15 +488,22 @@ class Table
      * In $options you can specify on_delete|on_delete = cascade|no_action ..,
      * on_update, constraint = constraint name.
      *
-     * @param string|string[] $columns Columns
+     * @param string|string[]|\Migrations\Db\Table\ForeignKey $columns Columns
      * @param string|\Migrations\Db\Table\Table $referencedTable Referenced Table
      * @param string|string[] $referencedColumns Referenced Columns
      * @param array<string, mixed> $options Options
      * @return $this
      */
-    public function addForeignKey(string|array $columns, string|TableValue $referencedTable, string|array $referencedColumns = ['id'], array $options = [])
+    public function addForeignKey(string|array|ForeignKey $columns, string|TableValue|null $referencedTable = null, string|array $referencedColumns = ['id'], array $options = [])
     {
-        $action = AddForeignKey::build($this->table, $columns, $referencedTable, $referencedColumns, $options);
+        if ($columns instanceof ForeignKey) {
+            $action = new AddForeignKey($this->table, $columns);
+        } else {
+            if (!$referencedTable) {
+                throw new InvalidArgumentException('Referenced table is required');
+            }
+            $action = AddForeignKey::build($this->table, $columns, $referencedTable, $referencedColumns, $options);
+        }
         $this->actions->addAction($action);
 
         return $this;
@@ -499,23 +515,44 @@ class Table
      * In $options you can specify on_delete|on_delete = cascade|no_action ..,
      * on_update, constraint = constraint name.
      *
-     * @param string $name The constraint name
+     * @param string|\Migrations\Db\Table\ForeignKey $name The constraint name or a foreign key object.
      * @param string|string[] $columns Columns
      * @param string|\Migrations\Db\Table\Table $referencedTable Referenced Table
      * @param string|string[] $referencedColumns Referenced Columns
      * @param array<string, mixed> $options Options
      * @return $this
+     * @deprecated 4.6.0 Use addForeignKey() instead. Use `BaseMigration::foreignKey()` to get
+     *   a fluent interface for building foreign keys.
      */
-    public function addForeignKeyWithName(string $name, string|array $columns, string|TableValue $referencedTable, string|array $referencedColumns = ['id'], array $options = [])
-    {
-        $action = AddForeignKey::build(
-            $this->table,
-            $columns,
-            $referencedTable,
-            $referencedColumns,
-            $options,
-            $name
+    public function addForeignKeyWithName(
+        string|ForeignKey $name,
+        string|array|null $columns = null,
+        string|TableValue|null $referencedTable = null,
+        string|array $referencedColumns = ['id'],
+        array $options = [],
+    ) {
+        deprecationWarning(
+            '4.6.0',
+            'Use addForeignKey() instead. Use `BaseMigration::foreignKey()` to get a fluent' .
+                ' interface for building foreign keys.',
         );
+        if (is_string($name)) {
+            if ($columns === null || $referencedTable === null) {
+                throw new InvalidArgumentException(
+                    'Columns and referencedTable are required when adding a foreign key with a name',
+                );
+            }
+            $action = AddForeignKey::build(
+                $this->table,
+                $columns,
+                $referencedTable,
+                $referencedColumns,
+                $options,
+                $name,
+            );
+        } else {
+            $action = new AddForeignKey($this->table, $name);
+        }
         $this->actions->addAction($action);
 
         return $this;
@@ -706,7 +743,7 @@ class Table
             return isset($primaryKey[$columnDef->getName()]);
         })->toArray();
 
-        if (empty($primaryKeyColumns)) {
+        if (!$primaryKeyColumns) {
             return;
         }
 
@@ -718,7 +755,7 @@ class Table
 
         $primaryKey = array_flip($primaryKey);
 
-        if (!empty($primaryKey)) {
+        if ($primaryKey) {
             $options['primary_key'] = $primaryKey;
         } else {
             unset($options['primary_key']);
@@ -747,7 +784,7 @@ class Table
     public function saveData(): void
     {
         $rows = $this->getData();
-        if (empty($rows)) {
+        if (!$rows) {
             return;
         }
 

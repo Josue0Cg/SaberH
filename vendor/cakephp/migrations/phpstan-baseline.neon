@@ -55,6 +55,12 @@ parameters:
 			path: src/Command/Phinx/Status.php
 
 		-
+			message: '#^Parameter \#1 \$callback of function array_map expects \(callable\(int\|string\)\: mixed\)\|null, Closure\(string\)\: string given\.$#'
+			identifier: argument.type
+			count: 1
+			path: src/Db/Adapter/AbstractAdapter.php
+
+		-
 			message: '#^Unsafe usage of new static\(\)\.$#'
 			identifier: new.static
 			count: 1
@@ -93,6 +99,12 @@ parameters:
 		-
 			message: '#^Right side of && is always true\.$#'
 			identifier: booleanAnd.rightAlwaysTrue
+			count: 1
+			path: src/Db/Adapter/SqliteAdapter.php
+
+		-
+			message: '#^Strict comparison using \!\=\= between Cake\\Database\\StatementInterface and null will always evaluate to true\.$#'
+			identifier: notIdentical.alwaysTrue
 			count: 1
 			path: src/Db/Adapter/SqliteAdapter.php
 

@@ -21,7 +21,7 @@ use Migrations\MigrationInterface;
 /**
  * Migrations SqlServer Adapter.
  */
-class SqlserverAdapter extends PdoAdapter
+class SqlserverAdapter extends AbstractAdapter
 {
     /**
      * @var string[]
@@ -29,6 +29,7 @@ class SqlserverAdapter extends PdoAdapter
     protected static array $specificColumnTypes = [
         self::PHINX_TYPE_FILESTREAM,
         self::PHINX_TYPE_BINARYUUID,
+        self::PHINX_TYPE_NATIVEUUID,
     ];
 
     /**
@@ -45,58 +46,6 @@ class SqlserverAdapter extends PdoAdapter
         self::PHINX_TYPE_FLOAT => true,
         self::PHINX_TYPE_DECIMAL => true,
     ];
-
-    /**
-     * {@inheritDoc}
-     *
-     * @throws \InvalidArgumentException
-     * @return void
-     */
-    public function connect(): void
-    {
-        $this->getConnection()->getDriver()->connect();
-        $this->setConnection($this->getConnection());
-    }
-
-    /**
-     * @inheritDoc
-     */
-    public function disconnect(): void
-    {
-        $this->getConnection()->getDriver()->disconnect();
-    }
-
-    /**
-     * @inheritDoc
-     */
-    public function hasTransactions(): bool
-    {
-        return true;
-    }
-
-    /**
-     * @inheritDoc
-     */
-    public function beginTransaction(): void
-    {
-        $this->getConnection()->begin();
-    }
-
-    /**
-     * @inheritDoc
-     */
-    public function commitTransaction(): void
-    {
-        $this->getConnection()->commit();
-    }
-
-    /**
-     * @inheritDoc
-     */
-    public function rollbackTransaction(): void
-    {
-        $this->getConnection()->rollback();
-    }
 
     /**
      * Quotes a schema name for use in a query.
@@ -122,29 +71,20 @@ class SqlserverAdapter extends PdoAdapter
     /**
      * @inheritDoc
      */
-    public function quoteColumnName(string $columnName): string
-    {
-        return '[' . str_replace(']', '\]', $columnName) . ']';
-    }
-
-    /**
-     * @inheritDoc
-     */
     public function hasTable(string $tableName): bool
     {
         if ($this->hasCreatedTable($tableName)) {
             return true;
         }
+        $dialect = $this->getSchemaDialect();
 
         $parts = $this->getSchemaName($tableName);
-        /** @var array<string, mixed> $result */
-        $result = $this->fetchRow(sprintf(
-            "SELECT count(*) as [count] FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s';",
-            $parts['schema'],
-            $parts['table'],
-        ));
+        [$query, $params] = $dialect->listTablesSql(['schema' => $parts['schema']]);
 
-        return $result['count'] > 0;
+        $rows = $this->query($query, $params)->fetchAll();
+        $tables = array_column($rows, 0);
+
+        return in_array($parts['table'], $tables, true);
     }
 
     /**
@@ -196,7 +136,7 @@ class SqlserverAdapter extends PdoAdapter
             if (is_string($primaryKey)) { // handle primary_key => 'id'
                 $pkSql .= $this->quoteColumnName($primaryKey);
             } elseif (is_array($primaryKey)) { // handle primary_key => array('tag_id', 'resource_id')
-                $pkSql .= implode(',', array_map([$this, 'quoteColumnName'], $primaryKey));
+                $pkSql .= implode(',', array_map($this->quoteColumnName(...), $primaryKey));
             }
             $pkSql .= ')';
             $sqlBuffer[] = $pkSql;
@@ -235,22 +175,22 @@ class SqlserverAdapter extends PdoAdapter
         if (!empty($primaryKey['constraint'])) {
             $sql = sprintf(
                 'DROP CONSTRAINT %s',
-                $this->quoteColumnName($primaryKey['constraint'])
+                $this->quoteColumnName($primaryKey['constraint']),
             );
             $instructions->addAlter($sql);
         }
 
         // Add the primary key(s)
-        if (!empty($newColumns)) {
+        if ($newColumns) {
             $sql = sprintf(
                 'ALTER TABLE %s ADD CONSTRAINT %s PRIMARY KEY (',
                 $this->quoteTableName($table->getName()),
-                $this->quoteColumnName('PK_' . $table->getName())
+                $this->quoteColumnName('PK_' . $table->getName()),
             );
             if (is_string($newColumns)) { // handle primary_key => 'id'
                 $sql .= $this->quoteColumnName($newColumns);
             } elseif (is_array($newColumns)) { // handle primary_key => array('tag_id', 'resource_id')
-                $sql .= implode(',', array_map([$this, 'quoteColumnName'], $newColumns));
+                $sql .= implode(',', array_map($this->quoteColumnName(...), $newColumns));
             }
             $sql .= ')';
             $instructions->addPostStep($sql);
@@ -291,7 +231,7 @@ class SqlserverAdapter extends PdoAdapter
             $comment,
             $this->schema,
             (string)$tableName,
-            (string)$column->getName()
+            (string)$column->getName(),
         );
     }
 
@@ -304,7 +244,7 @@ class SqlserverAdapter extends PdoAdapter
         $sql = sprintf(
             "EXEC sp_rename '%s', '%s'",
             $tableName,
-            $newTableName
+            $newTableName,
         );
 
         return new AlterInstructions([], [$sql]);
@@ -328,7 +268,7 @@ class SqlserverAdapter extends PdoAdapter
     {
         $sql = sprintf(
             'TRUNCATE TABLE %s',
-            $this->quoteTableName($tableName)
+            $this->quoteTableName($tableName),
         );
 
         $this->execute($sql);
@@ -341,7 +281,7 @@ class SqlserverAdapter extends PdoAdapter
      */
     public function getColumnComment(string $tableName, ?string $columnName): ?string
     {
-        $sql = sprintf("SELECT cast(extended_properties.[value] as nvarchar(4000)) comment
+        $sql = "SELECT cast(extended_properties.[value] as nvarchar(4000)) comment
   FROM sys.schemas
  INNER JOIN sys.tables
     ON schemas.schema_id = tables.schema_id
@@ -351,8 +291,9 @@ class SqlserverAdapter extends PdoAdapter
     ON tables.object_id = extended_properties.major_id
    AND columns.column_id = extended_properties.minor_id
    AND extended_properties.name = 'MS_Description'
-   WHERE schemas.[name] = '%s' AND tables.[name] = '%s' AND columns.[name] = '%s'", $this->schema, $tableName, (string)$columnName);
-        $row = $this->fetchRow($sql);
+   WHERE schemas.[name] = ? AND tables.[name] = ? AND columns.[name] = ?";
+        $params = [$this->schema, $tableName, (string)$columnName];
+        $row = $this->query($sql, $params)->fetch('assoc');
 
         if ($row) {
             return trim($row['comment']);
@@ -366,22 +307,27 @@ class SqlserverAdapter extends PdoAdapter
      */
     public function getColumns(string $tableName): array
     {
+        // TODO we can't use cakephp/database for reflection here
+        // as we'd be missing some attributes.
         $parts = $this->getSchemaName($tableName);
         $columns = [];
-        $sql = sprintf(
-            "SELECT DISTINCT TABLE_SCHEMA AS [schema], TABLE_NAME as [table_name], COLUMN_NAME AS [name], DATA_TYPE AS [type],
+        $sql = "SELECT
+            DISTINCT TABLE_SCHEMA AS [schema],
+            TABLE_NAME as [table_name],
+            COLUMN_NAME AS [name],
+            DATA_TYPE AS [type],
             IS_NULLABLE AS [null], COLUMN_DEFAULT AS [default],
             CHARACTER_MAXIMUM_LENGTH AS [char_length],
             NUMERIC_PRECISION AS [precision],
-            NUMERIC_SCALE AS [scale], ORDINAL_POSITION AS [ordinal_position],
-            COLUMNPROPERTY(object_id(TABLE_NAME), COLUMN_NAME, 'IsIdentity') as [identity]
+            NUMERIC_SCALE AS [scale],
+            ORDINAL_POSITION AS [ordinal_position],
+            COLUMNPROPERTY(object_id(TABLE_NAME),
+            COLUMN_NAME, 'IsIdentity') as [identity]
         FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s'
-        ORDER BY ordinal_position",
-            $parts['schema'],
-            $parts['table'],
-        );
-        $rows = $this->fetchAll($sql);
+        WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+        ORDER BY ordinal_position";
+        $rows = $this->query($sql, [$parts['schema'], $parts['table']])
+            ->fetchAll('assoc');
         foreach ($rows as $columnInfo) {
             try {
                 $type = $this->getPhinxType($columnInfo['type']);
@@ -437,16 +383,11 @@ class SqlserverAdapter extends PdoAdapter
     public function hasColumn(string $tableName, string $columnName): bool
     {
         $parts = $this->getSchemaName($tableName);
-        $sql = sprintf(
-            "SELECT count(*) as [count]
+        $sql = "SELECT count(*) as [count]
              FROM INFORMATION_SCHEMA.COLUMNS
-             WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s' AND COLUMN_NAME = '%s'",
-            $parts['schema'],
-            $parts['table'],
-            $columnName
-        );
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?";
         /** @var array<string, mixed> $result */
-        $result = $this->fetchRow($sql);
+        $result = $this->query($sql, [$parts['schema'], $parts['table'], $columnName])->fetch('assoc');
 
         return $result['count'] > 0;
     }
@@ -460,7 +401,7 @@ class SqlserverAdapter extends PdoAdapter
             'ALTER TABLE %s ADD %s %s',
             $table->getName(),
             $this->quoteColumnName((string)$column->getName()),
-            $this->getColumnSqlDefinition($column)
+            $this->getColumnSqlDefinition($column),
         );
 
         return new AlterInstructions([], [$alter]);
@@ -490,14 +431,14 @@ SQL;
         $instructions->addPostStep(sprintf(
             $sql,
             $oldConstraintName,
-            $newConstraintName
+            $newConstraintName,
         ));
 
         $instructions->addPostStep(sprintf(
             "EXECUTE sp_rename N'%s.%s', N'%s', 'COLUMN' ",
             $tableName,
             $columnName,
-            $newColumnName
+            $newColumnName,
         ));
 
         return $instructions;
@@ -522,7 +463,7 @@ SQL;
             $default = ltrim($this->getDefaultValueDefinition($default));
         }
 
-        if (empty($default)) {
+        if (!$default) {
             return $instructions;
         }
 
@@ -531,7 +472,7 @@ SQL;
             $this->quoteTableName($tableName),
             $constraintName,
             $default,
-            $this->quoteColumnName((string)$newColumn->getName())
+            $this->quoteColumnName((string)$newColumn->getName()),
         ));
 
         return $instructions;
@@ -551,7 +492,7 @@ SQL;
 
         if ($columnName !== $newColumn->getName()) {
             $instructions->merge(
-                $this->getRenameColumnInstructions($tableName, $columnName, (string)$newColumn->getName())
+                $this->getRenameColumnInstructions($tableName, $columnName, (string)$newColumn->getName()),
             );
         }
 
@@ -563,7 +504,7 @@ SQL;
             'ALTER TABLE %s ALTER COLUMN %s %s',
             $this->quoteTableName($tableName),
             $this->quoteColumnName((string)$newColumn->getName()),
-            $this->getColumnSqlDefinition($newColumn, false)
+            $this->getColumnSqlDefinition($newColumn, false),
         ));
         // change column comment if needed
         if ($newColumn->getComment()) {
@@ -587,7 +528,7 @@ SQL;
         $instructions->addPostStep(sprintf(
             'ALTER TABLE %s DROP COLUMN %s',
             $this->quoteTableName($tableName),
-            $this->quoteColumnName($columnName)
+            $this->quoteColumnName($columnName),
         ));
 
         return $instructions;
@@ -616,29 +557,14 @@ SQL;
      */
     protected function getDefaultConstraint(string $tableName, string $columnName): string|false
     {
-        $sql = "SELECT
-    default_constraints.name
-FROM
-    sys.all_columns
+        $sql = "SELECT default_constraints.name
+        FROM sys.all_columns
+        INNER JOIN sys.tables ON all_columns.object_id = tables.object_id
+        INNER JOIN sys.schemas ON tables.schema_id = schemas.schema_id
+        INNER JOIN sys.default_constraints ON all_columns.default_object_id = default_constraints.object_id
+        WHERE schemas.name = 'dbo' AND tables.name = ? AND all_columns.name = ?";
 
-        INNER JOIN
-    sys.tables
-        ON all_columns.object_id = tables.object_id
-
-        INNER JOIN
-    sys.schemas
-        ON tables.schema_id = schemas.schema_id
-
-        INNER JOIN
-    sys.default_constraints
-        ON all_columns.default_object_id = default_constraints.object_id
-
-WHERE
-        schemas.name = 'dbo'
-    AND tables.name = '{$tableName}'
-    AND all_columns.name = '{$columnName}'";
-
-        $rows = $this->fetchAll($sql);
+        $rows = $this->query($sql, [$tableName, $columnName])->fetchAll('assoc');
 
         return empty($rows) ? false : $rows[0]['name'];
     }
@@ -650,13 +576,14 @@ WHERE
      */
     protected function getIndexColumns(string $tableId, string $indexId): array
     {
-        $sql = "SELECT AC.[name] AS [column_name]
+        $sql = 'SELECT AC.[name] AS [column_name]
 FROM sys.[index_columns] IC
   INNER JOIN sys.[all_columns] AC ON IC.[column_id] = AC.[column_id]
-WHERE AC.[object_id] = {$tableId} AND IC.[index_id] = {$indexId}  AND IC.[object_id] = {$tableId}
-ORDER BY IC.[key_ordinal];";
+WHERE AC.[object_id] = ? AND IC.[index_id] = ?  AND IC.[object_id] = ?
+ORDER BY IC.[key_ordinal]';
 
-        $rows = $this->fetchAll($sql);
+        $params = [$tableId, $indexId, $tableId];
+        $rows = $this->query($sql, $params)->fetchAll('assoc');
         $columns = [];
         foreach ($rows as $row) {
             $columns[] = strtolower($row['column_name']);
@@ -674,23 +601,21 @@ ORDER BY IC.[key_ordinal];";
     public function getIndexes(string $tableName): array
     {
         $parts = $this->getSchemaName($tableName);
+        $dialect = $this->getSchemaDialect();
 
+        [$query, $params] = $dialect->describeIndexSql($parts['table'], ['schema' => $parts['schema']]);
+        $rows = $this->query($query, $params)->fetchAll('assoc');
         $indexes = [];
-        $sql = sprintf(
-            "SELECT I.[name] AS [index_name], I.[index_id] as [index_id], T.[object_id] as [table_id]
-FROM sys.[tables] AS T
-  INNER JOIN sys.[indexes] I ON T.[object_id] = I.[object_id]
-  INNER JOIN sys.[schemas] S ON S.schema_id = T.schema_id
-WHERE T.[is_ms_shipped] = 0 AND I.[type_desc] <> 'HEAP' AND S.[name] = '%s' AND T.[name] = '%s'
-ORDER BY T.[name], I.[index_id];",
-            $parts['schema'],
-            $parts['table'],
-        );
-
-        $rows = $this->fetchAll($sql);
         foreach ($rows as $row) {
-            $columns = $this->getIndexColumns($row['table_id'], $row['index_id']);
-            $indexes[$row['index_name']] = ['columns' => $columns];
+            $name = $row['index_name'];
+            if (!isset($indexes[$name])) {
+                $indexes[$name] = [
+                    'columns' => [],
+                    'isPrimary' => false,
+                ];
+            }
+            $indexes[$name]['columns'][] = $row['column_name'];
+            $indexes[$name]['isPrimary'] = $row['is_primary_key'];
         }
 
         return $indexes;
@@ -710,8 +635,7 @@ ORDER BY T.[name], I.[index_id];",
 
         foreach ($indexes as $index) {
             $a = array_diff($columns, $index['columns']);
-
-            if (empty($a)) {
+            if (!$a) {
                 return true;
             }
         }
@@ -762,11 +686,11 @@ ORDER BY T.[name], I.[index_id];",
 
         foreach ($indexes as $indexName => $index) {
             $a = array_diff($columns, $index['columns']);
-            if (empty($a)) {
+            if (!$a) {
                 $instructions->addPostStep(sprintf(
                     'DROP INDEX %s ON %s',
                     $this->quoteColumnName($indexName),
-                    $this->quoteTableName($tableName)
+                    $this->quoteTableName($tableName),
                 ));
 
                 return $instructions;
@@ -775,7 +699,7 @@ ORDER BY T.[name], I.[index_id];",
 
         throw new InvalidArgumentException(sprintf(
             "The specified index on columns '%s' does not exist",
-            implode(',', $columns)
+            implode(',', $columns),
         ));
     }
 
@@ -794,7 +718,7 @@ ORDER BY T.[name], I.[index_id];",
                 $instructions->addPostStep(sprintf(
                     'DROP INDEX %s ON %s',
                     $this->quoteColumnName($indexName),
-                    $this->quoteTableName($tableName)
+                    $this->quoteTableName($tableName),
                 ));
 
                 return $instructions;
@@ -803,7 +727,7 @@ ORDER BY T.[name], I.[index_id];",
 
         throw new InvalidArgumentException(sprintf(
             "The specified index name '%s' does not exist",
-            $indexName
+            $indexName,
         ));
     }
 
@@ -813,8 +737,7 @@ ORDER BY T.[name], I.[index_id];",
     public function hasPrimaryKey(string $tableName, $columns, ?string $constraint = null): bool
     {
         $primaryKey = $this->getPrimaryKey($tableName);
-
-        if (empty($primaryKey)) {
+        if (!$primaryKey) {
             return false;
         }
 
@@ -833,28 +756,15 @@ ORDER BY T.[name], I.[index_id];",
      */
     public function getPrimaryKey(string $tableName): array
     {
-        $parts = $this->getSchemaName($tableName);
-        $rows = $this->fetchAll(sprintf(
-            "SELECT
-                    tc.CONSTRAINT_NAME,
-                    kcu.COLUMN_NAME
-                FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS tc
-                JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE AS kcu
-                    ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
-                WHERE CONSTRAINT_TYPE = 'PRIMARY KEY'
-                    AND tc.CONSTRAINT_SCHEMA = '%s'
-                    AND tc.TABLE_NAME = '%s'
-                ORDER BY kcu.ORDINAL_POSITION",
-            $parts['schema'],
-            $parts['table'],
-        ));
-
+        $indexes = $this->getIndexes($tableName);
         $primaryKey = [
             'columns' => [],
         ];
-        foreach ($rows as $row) {
-            $primaryKey['constraint'] = $row['CONSTRAINT_NAME'];
-            $primaryKey['columns'][] = $row['COLUMN_NAME'];
+        foreach ($indexes as $name => $row) {
+            if ($row['isPrimary']) {
+                $primaryKey['constraint'] = $name;
+                $primaryKey['columns'] = $row['columns'];
+            }
         }
 
         return $primaryKey;
@@ -896,27 +806,26 @@ ORDER BY T.[name], I.[index_id];",
     protected function getForeignKeys(string $tableName): array
     {
         $parts = $this->getSchemaName($tableName);
+        $dialect = $this->getSchemaDialect();
         $foreignKeys = [];
-        $rows = $this->fetchAll(sprintf(
-            "SELECT
-                    tc.CONSTRAINT_NAME,
-                    tc.TABLE_NAME, kcu.COLUMN_NAME,
-                    ccu.TABLE_NAME AS REFERENCED_TABLE_NAME,
-                    ccu.COLUMN_NAME AS REFERENCED_COLUMN_NAME
-                FROM
-                    INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS tc
-                    JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE AS kcu ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
-                    JOIN INFORMATION_SCHEMA.CONSTRAINT_COLUMN_USAGE AS ccu ON ccu.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
-                WHERE CONSTRAINT_TYPE = 'FOREIGN KEY' AND tc.TABLE_SCHEMA = '%s' AND tc.TABLE_NAME = '%s'
-                ORDER BY kcu.ORDINAL_POSITION",
-            $parts['schema'],
-            $parts['table'],
-        ));
+
+        [$query, $params] = $dialect->describeForeignKeySql($parts['table'], ['schema' => $parts['schema']]);
+        $rows = $this->query($query, $params)->fetchAll('assoc');
+
         foreach ($rows as $row) {
-            $foreignKeys[$row['CONSTRAINT_NAME']]['table'] = $row['TABLE_NAME'];
-            $foreignKeys[$row['CONSTRAINT_NAME']]['columns'][] = $row['COLUMN_NAME'];
-            $foreignKeys[$row['CONSTRAINT_NAME']]['referenced_table'] = $row['REFERENCED_TABLE_NAME'];
-            $foreignKeys[$row['CONSTRAINT_NAME']]['referenced_columns'][] = $row['REFERENCED_COLUMN_NAME'];
+            $name = $row['foreign_key_name'];
+            if (!isset($foreignKeys[$name])) {
+                $foreignKeys[$name] = [
+                    'table' => '',
+                    'columns' => [],
+                    'referenced_table' => '',
+                    'referenced_columns' => [],
+                ];
+            }
+            $foreignKeys[$name]['table'] = $parts['table'];
+            $foreignKeys[$name]['columns'][] = $row['column'];
+            $foreignKeys[$name]['referenced_table'] = $row['reference_table'];
+            $foreignKeys[$name]['referenced_columns'][] = $row['reference_column'];
         }
         foreach ($foreignKeys as $name => $key) {
             $foreignKeys[$name]['columns'] = array_values(array_unique($key['columns']));
@@ -935,7 +844,7 @@ ORDER BY T.[name], I.[index_id];",
         $instructions->addPostStep(sprintf(
             'ALTER TABLE %s ADD %s',
             $this->quoteTableName($table->getName()),
-            $this->getForeignKeySqlDefinition($foreignKey, $table->getName())
+            $this->getForeignKeySqlDefinition($foreignKey, $table->getName()),
         ));
 
         return $instructions;
@@ -950,7 +859,7 @@ ORDER BY T.[name], I.[index_id];",
         $instructions->addPostStep(sprintf(
             'ALTER TABLE %s DROP CONSTRAINT %s',
             $this->quoteTableName($tableName),
-            $this->quoteColumnName($constraint)
+            $this->quoteColumnName($constraint),
         ));
 
         return $instructions;
@@ -971,16 +880,16 @@ ORDER BY T.[name], I.[index_id];",
             }
         }
 
-        if (empty($matches)) {
+        if (!$matches) {
             throw new InvalidArgumentException(sprintf(
                 'No foreign key on column(s) `%s` exists',
-                implode(', ', $columns)
+                implode(', ', $columns),
             ));
         }
 
         foreach ($matches as $name) {
             $instructions->merge(
-                $this->getDropForeignKeyInstructions($tableName, $name)
+                $this->getDropForeignKeyInstructions($tableName, $name),
             );
         }
 
@@ -1025,6 +934,7 @@ ORDER BY T.[name], I.[index_id];",
                 return ['name' => 'bit'];
             case static::PHINX_TYPE_BINARYUUID:
             case static::PHINX_TYPE_UUID:
+            case static::PHINX_TYPE_NATIVEUUID:
                 return ['name' => 'uniqueidentifier'];
             case static::PHINX_TYPE_FILESTREAM:
                 return ['name' => 'varbinary', 'limit' => 'max'];
@@ -1121,12 +1031,10 @@ ORDER BY T.[name], I.[index_id];",
     public function hasDatabase(string $name): bool
     {
         /** @var array<string, mixed> $result */
-        $result = $this->fetchRow(
-            sprintf(
-                "SELECT count(*) as [count] FROM master.dbo.sysdatabases WHERE [name] = '%s'",
-                $name
-            )
-        );
+        $result = $this->query(
+            'SELECT count(*) as [count] FROM master.dbo.sysdatabases WHERE [name] = ?',
+            [$name],
+        )->fetch('assoc');
 
         return $result['count'] > 0;
     }
@@ -1172,7 +1080,7 @@ SQL;
                 $buffer[] = sprintf(
                     '(%s, %s)',
                     $column->getPrecision() ?: $sqlType['precision'],
-                    $column->getScale() ?: $sqlType['scale']
+                    $column->getScale() ?: $sqlType['scale'],
                 );
             } elseif (!in_array($sqlType['name'], $noLimits) && ($column->getLimit() || isset($sqlType['limit']))) {
                 $buffer[] = sprintf('(%s)', $column->getLimit() ?: $sqlType['limit']);
@@ -1229,15 +1137,20 @@ SQL;
         }, $columnNames);
 
         $include = $index->getInclude();
-        $includedColumns = $include ? sprintf('INCLUDE ([%s])', implode('],[', $include)) : '';
+        $includedColumns = $include ? sprintf(' INCLUDE ([%s])', implode('],[', $include)) : '';
+        $where = (string)$index->getWhere();
+        if ($where) {
+            $where = ' WHERE ' . $where;
+        }
 
         return sprintf(
-            'CREATE %s INDEX %s ON %s (%s) %s;',
+            'CREATE %s INDEX %s ON %s (%s)%s%s;',
             ($index->getType() === Index::UNIQUE ? 'UNIQUE' : ''),
             $indexName,
             $this->quoteTableName($tableName),
             implode(',', $columnNames),
-            $includedColumns
+            $includedColumns,
+            $where,
         );
     }
 
@@ -1250,7 +1163,7 @@ SQL;
      */
     protected function getForeignKeySqlDefinition(ForeignKey $foreignKey, string $tableName): string
     {
-        $constraintName = $foreignKey->getConstraint() ?: $tableName . '_' . implode('_', $foreignKey->getColumns());
+        $constraintName = $foreignKey->getName() ?: $tableName . '_' . implode('_', $foreignKey->getColumns());
         $def = ' CONSTRAINT ' . $this->quoteColumnName($constraintName);
         $def .= ' FOREIGN KEY ("' . implode('", "', $foreignKey->getColumns()) . '")';
         $def .= " REFERENCES {$this->quoteTableName($foreignKey->getReferencedTable()->getName())} (\"" . implode('", "', $foreignKey->getReferencedColumns()) . '")';
@@ -1286,13 +1199,8 @@ SQL;
      */
     public function hasSchema(string $schemaName): bool
     {
-        $sql = sprintf(
-            'SELECT count(*) AS [count]
-             FROM sys.schemas
-             WHERE name = %s',
-            $this->quoteString($schemaName)
-        );
-        $result = $this->fetchRow($sql);
+        $sql = 'SELECT count(*) AS [count] FROM sys.schemas WHERE name = ?';
+        $result = $this->query($sql, [$schemaName])->fetch('assoc');
         if (!$result) {
             return false;
         }

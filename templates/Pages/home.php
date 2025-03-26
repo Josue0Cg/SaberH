@@ -14,25 +14,27 @@
     }
 
     body {
-      font-family: 'Poppins', sans-serif;
-      background: linear-gradient(135deg, #c3cfe2, #dde5f2);
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-      overflow: hidden;
-    }
+  font-family: 'Poppins', sans-serif;
+  background: linear-gradient(135deg, #c3cfe2, #dde5f2);
+  display: flex;
+  justify-content: center; /* Aquiiiii se centraaaaa:/*/
+  align-items: center;
+  height: 100vh;
+  overflow: hidden;
+}
 
-    .card {
-      background: rgba(255, 255, 255, 0.2);
-      backdrop-filter: blur(15px);
-      -webkit-backdrop-filter: blur(15px);
-      border-radius: 20px;
-      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
-      padding: 40px 60px;
-      text-align: center;
-      animation: fadeIn 1.5s ease;
-    }
+.card {
+  background: rgba(255, 255, 255, 0.2);
+  backdrop-filter: blur(15px);
+  -webkit-backdrop-filter: blur(15px);
+  border-radius: 20px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
+  padding: 40px 60px;
+  text-align: center;
+  animation: fadeIn 1.5s ease;
+  transform: translateX(-100px);
+}
+
 
     h1 {
       font-size: 2.8em;

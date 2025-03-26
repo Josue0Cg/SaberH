@@ -143,7 +143,7 @@ class Manager
             $version['version'],
             $version['start_time'],
             $version['end_time'],
-            str_pad($version['migration_name'], $maxNameLength, ' ')
+            str_pad($version['migration_name'], $maxNameLength, ' '),
         ));
 
         if ($version && $version['breakpoint']) {
@@ -193,7 +193,7 @@ class Manager
         sort($versions);
         $versions = array_reverse($versions);
 
-        if (empty($versions) || $dateString > $versions[0]) {
+        if (!$versions || $dateString > $versions[0]) {
             $this->getIo()->out('No migrations to rollback');
 
             return;
@@ -247,9 +247,9 @@ class Manager
 
         $migrationFile = glob($path . DS . $version . '*');
 
-        if (empty($migrationFile)) {
+        if (!$migrationFile) {
             throw new RuntimeException(
-                sprintf('A migration file matching version number `%s` could not be found', $version)
+                sprintf('A migration file matching version number `%s` could not be found', $version),
             );
         }
 
@@ -314,13 +314,13 @@ class Manager
         }
         $targetArg = $args->getOption('target');
         $hasAllVersion = in_array($versionArg, ['all', '*'], true);
-        if ((empty($versionArg) && empty($targetArg)) || $hasAllVersion) {
+        if ((!$versionArg && !$targetArg) || $hasAllVersion) {
             return $versions;
         }
 
         $version = (int)$targetArg ?: (int)$versionArg;
 
-        if ($args->getOption('only') || !empty($versionArg)) {
+        if ($args->getOption('only') || $versionArg) {
             if (!in_array($version, $versions)) {
                 throw new InvalidArgumentException("Migration `$version` was not found !");
             }
@@ -373,7 +373,7 @@ class Manager
                 $out[] = sprintf(
                     '<error>An error occurred while marking migration `%s` as migrated : %s</error>',
                     $version,
-                    $e->getMessage()
+                    $e->getMessage(),
                 );
                 $out[] = '<error>All marked migrations during this process were unmarked.</error>';
 
@@ -399,7 +399,7 @@ class Manager
         $versions = $env->getVersions();
         $current = $env->getCurrentVersion();
 
-        if (empty($versions) && empty($migrations)) {
+        if (!$versions && !$migrations) {
             return;
         }
 
@@ -409,7 +409,7 @@ class Manager
             if ($version != 0 && !isset($migrations[$version])) {
                 $this->getIo()->out(sprintf(
                     '<comment>warning</comment> %s is not a valid version',
-                    $version
+                    $version,
                 ));
 
                 return;
@@ -474,7 +474,7 @@ class Manager
         $this->printMigrationStatus(
             $migration,
             ($direction === MigrationInterface::UP ? 'migrated' : 'reverted'),
-            sprintf('%.4fs', $end - $start)
+            sprintf('%.4fs', $end - $start),
         );
     }
 
@@ -505,7 +505,7 @@ class Manager
         $this->printSeedStatus(
             $seed,
             'seeded',
-            sprintf('%.4fs', $end - $start)
+            sprintf('%.4fs', $end - $start),
         );
     }
 
@@ -522,7 +522,7 @@ class Manager
         $this->printStatusOutput(
             $migration->getVersion() . ' ' . $migration->getName(),
             $status,
-            $duration
+            $duration,
         );
     }
 
@@ -539,7 +539,7 @@ class Manager
         $this->printStatusOutput(
             $seed->getName(),
             $status,
-            $duration
+            $duration,
         );
     }
 
@@ -620,7 +620,7 @@ class Manager
 
         // Check we have at least 1 migration to revert
         $executedVersionCreationTimes = array_keys($executedVersions);
-        if (empty($executedVersionCreationTimes) || $target == end($executedVersionCreationTimes)) {
+        if (!$executedVersionCreationTimes || $target == end($executedVersionCreationTimes)) {
             $io->out('<error>No migrations to rollback</error>');
 
             return;
@@ -807,8 +807,8 @@ class Manager
                     function ($phpFile) {
                         return "    <info>{$phpFile}</info>";
                     },
-                    $phpFiles
-                )
+                    $phpFiles,
+                ),
             );
 
             // filter the files to only get the ones that match our naming scheme
@@ -834,7 +834,7 @@ class Manager
                         throw new InvalidArgumentException(sprintf(
                             'Migration "%s" has the same name as "%s"',
                             basename($filePath),
-                            $fileNames[$class]
+                            $fileNames[$class],
                         ));
                     }
 
@@ -852,7 +852,7 @@ class Manager
                         throw new InvalidArgumentException(sprintf(
                             'Could not find class "%s" in file "%s"',
                             $class,
-                            $filePath
+                            $filePath,
                         ));
                     }
 
@@ -913,7 +913,7 @@ class Manager
     {
         $dependenciesInstances = [];
         $dependencies = $seed->getDependencies();
-        if (!empty($dependencies) && !empty($this->seeds)) {
+        if ($dependencies && $this->seeds) {
             foreach ($dependencies as $dependency) {
                 foreach ($this->seeds as $seed) {
                     $name = $seed->getName();
@@ -940,7 +940,7 @@ class Manager
             $name = $seed->getName();
             $orderedSeeds[$name] = $seed;
             $dependencies = $this->getSeedDependenciesInstances($seed);
-            if (!empty($dependencies)) {
+            if ($dependencies) {
                 $orderedSeeds = array_merge($this->orderSeedsByDependencies($dependencies), $orderedSeeds);
             }
         }
@@ -980,7 +980,7 @@ class Manager
                         throw new InvalidArgumentException(sprintf(
                             'Could not find class "%s" in file "%s"',
                             $class,
-                            $filePath
+                            $filePath,
                         ));
                     }
 
@@ -1008,7 +1008,7 @@ class Manager
             $this->setSeeds($seeds);
         }
         $this->seeds = $this->orderSeedsByDependencies((array)$this->seeds);
-        if (empty($this->seeds)) {
+        if (!$this->seeds) {
             return [];
         }
 
@@ -1072,7 +1072,7 @@ class Manager
         $env = $this->getEnvironment();
         $versions = $env->getVersionLog();
 
-        if (empty($versions) || empty($migrations)) {
+        if (!$versions || !$migrations) {
             return;
         }
 
@@ -1085,7 +1085,7 @@ class Manager
         if ($version != 0 && (!isset($versions[$version]) || !isset($migrations[$version]))) {
             $io->out(sprintf(
                 '<comment>warning</comment> %s is not a valid version',
-                $version
+                $version,
             ));
 
             return;
@@ -1112,7 +1112,7 @@ class Manager
         $io->out(
             ' Breakpoint ' . ($versions[$version]['breakpoint'] ? 'set' : 'cleared') .
             ' for <info>' . $version . '</info>' .
-            ' <comment>' . $migrations[$version]->getName() . '</comment>'
+            ' <comment>' . $migrations[$version]->getName() . '</comment>',
         );
     }
 
@@ -1125,7 +1125,7 @@ class Manager
     {
         $this->getIo()->out(sprintf(
             ' %d breakpoints cleared.',
-            $this->getEnvironment()->getAdapter()->resetAllBreakpoints()
+            $this->getEnvironment()->getAdapter()->resetAllBreakpoints(),
         ));
     }
 

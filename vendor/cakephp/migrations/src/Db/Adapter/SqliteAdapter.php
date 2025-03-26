@@ -24,7 +24,7 @@ use const FILTER_VALIDATE_BOOLEAN;
 /**
  * Migrations SQLite Adapter.
  */
-class SqliteAdapter extends PdoAdapter
+class SqliteAdapter extends AbstractAdapter
 {
     public const MEMORY = ':memory:';
 
@@ -134,19 +134,6 @@ class SqliteAdapter extends PdoAdapter
     }
 
     /**
-     * {@inheritDoc}
-     *
-     * @throws \RuntimeException
-     * @throws \InvalidArgumentException
-     * @return void
-     */
-    public function connect(): void
-    {
-        $this->getConnection()->getDriver()->connect();
-        $this->setConnection($this->getConnection());
-    }
-
-    /**
      * @inheritDoc
      */
     public function setOptions(array $options): AdapterInterface
@@ -168,57 +155,11 @@ class SqliteAdapter extends PdoAdapter
     /**
      * @inheritDoc
      */
-    public function disconnect(): void
-    {
-        $this->getConnection()->getDriver()->disconnect();
-    }
-
-    /**
-     * @inheritDoc
-     */
-    public function hasTransactions(): bool
-    {
-        return true;
-    }
-
-    /**
-     * @inheritDoc
-     */
-    public function beginTransaction(): void
-    {
-        $this->getConnection()->begin();
-    }
-
-    /**
-     * @inheritDoc
-     */
-    public function commitTransaction(): void
-    {
-        $this->getConnection()->commit();
-    }
-
-    /**
-     * @inheritDoc
-     */
-    public function rollbackTransaction(): void
-    {
-        $this->getConnection()->rollBack();
-    }
-
-    /**
-     * @inheritDoc
-     */
     public function quoteTableName($tableName): string
     {
-        return str_replace('.', '`.`', $this->quoteColumnName($tableName));
-    }
+        $driver = $this->getConnection()->getDriver();
 
-    /**
-     * @inheritDoc
-     */
-    public function quoteColumnName($columnName): string
-    {
-        return '`' . str_replace('`', '``', $columnName) . '`';
+        return $driver->quoteIdentifier($tableName);
     }
 
     /**
@@ -278,20 +219,6 @@ class SqliteAdapter extends PdoAdapter
     }
 
     /**
-     * Retrieves information about a given table from one of the SQLite pragmas
-     *
-     * @param string $tableName The table to query
-     * @param string $pragma The pragma to query
-     * @return array
-     */
-    protected function getTableInfo(string $tableName, string $pragma = 'table_info'): array
-    {
-        $info = $this->getSchemaName($tableName, true);
-
-        return $this->fetchAll(sprintf('PRAGMA %s%s(%s)', $info['schema'], $pragma, $info['table']));
-    }
-
-    /**
      * Searches through all available schemata to find a table and returns an array
      * containing the bare schema name and whether the table exists at all.
      * If no schema was specified and the table does not exist the "main" schema is returned
@@ -326,8 +253,16 @@ class SqliteAdapter extends PdoAdapter
             } else {
                 $master = sprintf('%s.%s', $this->quoteColumnName($schema), 'sqlite_master');
             }
+            $rows = [];
             try {
-                $rows = $this->fetchAll(sprintf("SELECT name FROM %s WHERE type='table' AND lower(name) = %s", $master, $this->quoteString($table)));
+                $result = $this->query(
+                    "SELECT name FROM {$master} WHERE type = 'table' AND lower(name) = ?",
+                    [$table],
+                );
+                // null on error
+                if ($result !== null) {
+                    $rows = $result->fetchAll('assoc');
+                }
             } catch (PDOException $e) {
                 // an exception can occur if the schema part of the table refers to a database which is not attached
                 break;
@@ -434,24 +369,24 @@ class SqliteAdapter extends PdoAdapter
 
         // Drop the existing primary key
         $primaryKey = $this->getPrimaryKey($table->getName());
-        if (!empty($primaryKey)) {
+        if ($primaryKey) {
             $instructions->merge(
                 // FIXME: array access is a hack to make this incomplete implementation work with a correct getPrimaryKey implementation
-                $this->getDropPrimaryKeyInstructions($table, $primaryKey[0])
+                $this->getDropPrimaryKeyInstructions($table, $primaryKey[0]),
             );
         }
 
         // Add the primary key(s)
-        if (!empty($newColumns)) {
+        if ($newColumns) {
             if (!is_string($newColumns)) {
                 throw new InvalidArgumentException(sprintf(
                     'Invalid value for primary key: %s',
-                    json_encode($newColumns)
+                    json_encode($newColumns),
                 ));
             }
 
             $instructions->merge(
-                $this->getAddPrimaryKeyInstructions($table, $newColumns)
+                $this->getAddPrimaryKeyInstructions($table, $newColumns),
             );
         }
 
@@ -479,7 +414,7 @@ class SqliteAdapter extends PdoAdapter
         $sql = sprintf(
             'ALTER TABLE %s RENAME TO %s',
             $this->quoteTableName($tableName),
-            $this->quoteTableName($newTableName)
+            $this->quoteTableName($newTableName),
         );
 
         return new AlterInstructions([], [$sql]);
@@ -506,17 +441,16 @@ class SqliteAdapter extends PdoAdapter
         $this->execute(sprintf(
             'DELETE FROM %s.%s',
             $this->quoteColumnName($info['schema']),
-            $this->quoteColumnName($info['table'])
+            $this->quoteColumnName($info['table']),
         ));
 
         // assuming no error occurred, reset the autoincrement (if any)
         if ($this->hasTable($info['schema'] . '.sqlite_sequence')) {
-            $this->execute(sprintf(
-                'DELETE FROM %s.%s where name  = %s',
+            $sql = sprintf(
+                'DELETE FROM %s.sqlite_sequence where name = ?',
                 $this->quoteColumnName($info['schema']),
-                'sqlite_sequence',
-                $this->quoteString($info['table'])
-            ));
+            );
+            $this->execute($sql, [$info['table']]);
         }
     }
 
@@ -604,7 +538,7 @@ PCRE_PATTERN;
     {
         $result = null;
         // make sure the table has only one primary key column which is of type integer
-        foreach ($this->getTableInfo($tableName) as $col) {
+        foreach ($this->getColumnData($tableName) as $col) {
             $type = strtolower($col['type']);
             if ($col['pk'] > 1) {
                 // the table has a composite primary key
@@ -626,7 +560,7 @@ PCRE_PATTERN;
         }
         // make sure the table does not have a PK-origin autoindex
         // such an autoindex would indicate either that the primary key was specified as descending, or that this is a WITHOUT ROWID table
-        foreach ($this->getTableInfo($tableName, 'index_list') as $idx) {
+        foreach ($this->getIndexes($tableName) as $idx) {
             if ($idx['origin'] === 'pk') {
                 return null;
             }
@@ -636,16 +570,29 @@ PCRE_PATTERN;
     }
 
     /**
+     * Get column metadata
+     *
+     * @param string $tableName The table to get column data from.
+     * @return array
+     */
+    protected function getColumnData(string $tableName): array
+    {
+        $dialect = $this->getSchemaDialect();
+
+        [$query, $params] = $dialect->describeColumnSql($tableName, []);
+
+        return $this->query($query, $params)->fetchAll('assoc');
+    }
+
+    /**
      * @inheritDoc
      */
     public function getColumns(string $tableName): array
     {
         $columns = [];
-
-        $rows = $this->getTableInfo($tableName);
         $identity = $this->resolveIdentity($tableName);
 
-        foreach ($rows as $columnInfo) {
+        foreach ($this->getColumnData($tableName) as $columnInfo) {
             $column = new Column();
             $type = $this->getPhinxType($columnInfo['type']);
             $default = $this->parseDefaultValue($columnInfo['dflt_value'], $type['name']);
@@ -670,8 +617,7 @@ PCRE_PATTERN;
      */
     public function hasColumn(string $tableName, string $columnName): bool
     {
-        $rows = $this->getTableInfo($tableName);
-        foreach ($rows as $column) {
+        foreach ($this->getColumnData($tableName) as $column) {
             if (strcasecmp($column['name'], $columnName) === 0) {
                 return true;
             }
@@ -701,15 +647,15 @@ PCRE_PATTERN;
             $sql = preg_replace(
                 sprintf(
                     "/(%s(?:\/\*.*?\*\/|\([^)]+\)|'[^']*?'|[^,])+)([,)])/",
-                    $this->quoteColumnName((string)$finalColumnName)
+                    $this->quoteColumnName((string)$finalColumnName),
                 ),
                 sprintf(
                     '$1, %s %s$2',
                     $this->quoteColumnName((string)$column->getName()),
-                    $this->getColumnSqlDefinition($column)
+                    $this->getColumnSqlDefinition($column),
                 ),
                 (string)$state['createSQL'],
-                1
+                1,
             );
             $this->execute($sql);
 
@@ -733,7 +679,7 @@ PCRE_PATTERN;
      */
     protected function getDeclaringSql(string $tableName): string
     {
-        $rows = $this->fetchAll("SELECT * FROM sqlite_master WHERE `type` = 'table'");
+        $rows = $this->fetchAll("SELECT * FROM sqlite_master WHERE \"type\" = 'table'");
 
         $sql = '';
         foreach ($rows as $table) {
@@ -742,14 +688,19 @@ PCRE_PATTERN;
             }
         }
 
-        $columnsInfo = $this->getTableInfo($tableName);
-
+        $columnsInfo = $this->getColumnData($tableName);
         foreach ($columnsInfo as $column) {
             $columnName = preg_quote($column['name'], '#');
             $columnNamePattern = "\"$columnName\"|`$columnName`|\\[$columnName\\]|$columnName";
             $columnNamePattern = "#([\(,]+\\s*)($columnNamePattern)(\\s)#iU";
 
-            $sql = preg_replace($columnNamePattern, "$1`{$column['name']}`$3", $sql);
+            $sql = preg_replace_callback(
+                $columnNamePattern,
+                function ($matches) use ($column) {
+                    return $matches[1] . $this->quoteColumnName($column['name']) . $matches[3];
+                },
+                $sql,
+            );
         }
 
         $tableNamePattern = "\"$tableName\"|`$tableName`|\\[$tableName\\]|$tableName";
@@ -769,7 +720,7 @@ PCRE_PATTERN;
      */
     protected function getDeclaringIndexSql(string $tableName, string $indexName): string
     {
-        $rows = $this->fetchAll("SELECT * FROM sqlite_master WHERE `type` = 'index'");
+        $rows = $this->fetchAll("SELECT * FROM sqlite_master WHERE \"type\" = 'index'");
 
         $sql = '';
         foreach ($rows as $table) {
@@ -801,29 +752,23 @@ PCRE_PATTERN;
             $state['indices'] = [];
             $state['triggers'] = [];
 
-            $rows = $this->fetchAll(
-                sprintf(
-                    "
-                        SELECT *
-                        FROM sqlite_master
-                        WHERE
-                            (`type` = 'index' OR `type` = 'trigger')
-                            AND tbl_name = %s
-                            AND sql IS NOT NULL
-                    ",
-                    $this->quoteValue($tableName)
-                )
-            );
-
-            $schema = $this->getSchemaName($tableName, true)['schema'];
+            $params = [$tableName];
+            $rows = $this->query(
+                "SELECT *
+                FROM sqlite_master
+                WHERE
+                    (\"type\" = 'index' OR \"type\" = 'trigger')
+                    AND tbl_name = ?
+                    AND sql IS NOT NULL
+                ",
+                $params,
+            )->fetchAll('assoc');
+            $indexes = $this->getIndexes($tableName);
 
             foreach ($rows as $row) {
                 switch ($row['type']) {
                     case 'index':
-                        $info = $this->fetchAll(
-                            sprintf('PRAGMA %sindex_info(%s)', $schema, $this->quoteValue($row['name']))
-                        );
-
+                        $info = $indexes[$row['name']];
                         $columns = array_map(
                             function ($column) {
                                 if ($column === null) {
@@ -832,7 +777,7 @@ PCRE_PATTERN;
 
                                 return strtolower($column);
                             },
-                            array_column($info, 'name')
+                            $info['columns'],
                         );
                         $hasExpressions = in_array(null, $columns, true);
 
@@ -865,7 +810,7 @@ PCRE_PATTERN;
      */
     protected function filterIndicesForRemovedColumn(
         AlterInstructions $instructions,
-        string $columnName
+        string $columnName,
     ): AlterInstructions {
         $instructions->addPostStep(function (array $state) use ($columnName): array {
             foreach ($state['indices'] as $key => $index) {
@@ -894,7 +839,7 @@ PCRE_PATTERN;
     protected function updateIndicesForRenamedColumn(
         AlterInstructions $instructions,
         string $oldColumnName,
-        string $newColumnName
+        string $newColumnName,
     ): AlterInstructions {
         $instructions->addPostStep(function (array $state) use ($oldColumnName, $newColumnName): array {
             foreach ($state['indices'] as $key => $index) {
@@ -919,7 +864,7 @@ PCRE_PATTERN;
                     $state['indices'][$key]['sql'] = preg_replace(
                         sprintf($pattern, preg_quote($oldColumnName, '/')),
                         "\\1\\2$newColumnName\\4\\5\\6",
-                        $index['sql']
+                        $index['sql'],
                     );
                 }
             }
@@ -972,12 +917,12 @@ PCRE_PATTERN;
             $otherTables = $this
                 ->query(
                     "SELECT name FROM sqlite_master WHERE type = 'table' AND name != ?",
-                    [$tableName]
+                    [$tableName],
                 )
                 ->fetchAll('assoc');
 
             foreach ($otherTables as $otherTable) {
-                $foreignKeyList = $this->getTableInfo($otherTable['name'], 'foreign_key_list');
+                $foreignKeyList = $this->getForeignKeys($otherTable['name']);
                 foreach ($foreignKeyList as $foreignKey) {
                     if (strcasecmp($foreignKey['table'], $tableName) === 0) {
                         $tablesToCheck[] = $otherTable['name'];
@@ -992,7 +937,7 @@ PCRE_PATTERN;
                 $schema = $this->getSchemaName($tableToCheck, true)['schema'];
 
                 $stmt = $this->query(
-                    sprintf('PRAGMA %sforeign_key_check(%s)', $schema, $this->quoteTableName($tableToCheck))
+                    sprintf('PRAGMA %sforeign_key_check(%s)', $schema, $this->quoteTableName($tableToCheck)),
                 );
                 $row = $stmt->fetch();
                 $stmt->closeCursor();
@@ -1000,7 +945,7 @@ PCRE_PATTERN;
                 if (is_array($row)) {
                     throw new RuntimeException(sprintf(
                         'Integrity constraint violation: FOREIGN KEY constraint on `%s` failed.',
-                        $tableToCheck
+                        $tableToCheck,
                     ));
                 }
             }
@@ -1027,7 +972,7 @@ PCRE_PATTERN;
             $this->quoteTableName($tableName),
             implode(', ', $writeColumns),
             implode(', ', $selectColumns),
-            $this->quoteTableName($tmpTableName)
+            $this->quoteTableName($tmpTableName),
         );
         $this->execute($sql);
     }
@@ -1047,14 +992,14 @@ PCRE_PATTERN;
                 $state['tmpTableName'],
                 $tableName,
                 $state['writeColumns'],
-                $state['selectColumns']
+                $state['selectColumns'],
             );
 
             $this->execute(sprintf('DROP TABLE %s', $this->quoteTableName($tableName)));
             $this->execute(sprintf(
                 'ALTER TABLE %s RENAME TO %s',
                 $this->quoteTableName($state['tmpTableName']),
-                $this->quoteTableName($tableName)
+                $this->quoteTableName($tableName),
             ));
 
             return $state;
@@ -1075,7 +1020,7 @@ PCRE_PATTERN;
      */
     protected function calculateNewTableColumns(string $tableName, string|false $columnName, string|false $newColumnName): array
     {
-        $columns = $this->fetchAll(sprintf('pragma table_info(%s)', $this->quoteTableName($tableName)));
+        $columns = $this->getColumnData($tableName);
         /** @var array<string> $selectColumns */
         $selectColumns = [];
         /** @var array<string> $writeColumns */
@@ -1102,15 +1047,15 @@ PCRE_PATTERN;
             }
         }
 
-        $selectColumns = array_filter($selectColumns, fn ($value) => $value !== '');
-        $writeColumns = array_filter($writeColumns, fn ($value) => $value !== '');
+        $selectColumns = array_filter($selectColumns, fn($value) => $value !== '');
+        $writeColumns = array_filter($writeColumns, fn($value) => $value !== '');
         $selectColumns = array_map([$this, 'quoteColumnName'], $selectColumns);
         $writeColumns = array_map([$this, 'quoteColumnName'], $writeColumns);
 
         if ($columnName && !$found) {
             throw new InvalidArgumentException(sprintf(
                 'The specified column doesn\'t exist: %s',
-                $columnName
+                $columnName,
             ));
         }
 
@@ -1141,7 +1086,7 @@ PCRE_PATTERN;
             $createSQL = preg_replace(
                 "/^CREATE TABLE .* \(/Ui",
                 '',
-                $createSQL
+                $createSQL,
             );
 
             $createSQL = "CREATE TABLE {$this->quoteTableName($tmpTableName)} ({$createSQL}";
@@ -1170,7 +1115,7 @@ PCRE_PATTERN;
         string $tableName,
         ?string $renamedOrRemovedColumnName = null,
         ?string $newColumnName = null,
-        bool $validateForeignKeys = true
+        bool $validateForeignKeys = true,
     ): AlterInstructions {
         $instructions = $this->bufferIndicesAndTriggers($instructions, $tableName);
 
@@ -1217,7 +1162,7 @@ PCRE_PATTERN;
             $sql = str_replace(
                 $this->quoteColumnName($columnName),
                 $this->quoteColumnName($newColumnName),
-                (string)$state['createSQL']
+                (string)$state['createSQL'],
             );
             $this->execute($sql);
 
@@ -1246,7 +1191,7 @@ PCRE_PATTERN;
                 sprintf("/%s(?:\/\*.*?\*\/|\([^)]+\)|'[^']*?'|[^,])+([,)])/", $this->quoteColumnName($columnName)),
                 sprintf('%s %s$1', $this->quoteColumnName($newColumnName), $this->getColumnSqlDefinition($newColumn)),
                 (string)$state['createSQL'],
-                1
+                1,
             );
             $this->execute($sql);
 
@@ -1279,7 +1224,7 @@ PCRE_PATTERN;
             $sql = preg_replace(
                 sprintf("/%s\s%s.*(,\s(?!')|\)$)/U", preg_quote($this->quoteColumnName($columnName)), preg_quote($state['columnType'])),
                 '',
-                (string)$state['createSQL']
+                (string)$state['createSQL'],
             );
 
             if (substr($sql, -2) === ', ') {
@@ -1302,17 +1247,24 @@ PCRE_PATTERN;
      */
     protected function getIndexes(string $tableName): array
     {
-        $indexes = [];
-        $schema = $this->getSchemaName($tableName, true)['schema'];
-        $indexList = $this->getTableInfo($tableName, 'index_list');
+        $dialect = $this->getSchemaDialect();
 
-        foreach ($indexList as $index) {
-            $indexData = $this->fetchAll(sprintf('pragma %sindex_info(%s)', $schema, $this->quoteColumnName($index['name'])));
+        [$query, $params] = $dialect->describeIndexSql($tableName, []);
+        $result = $this->query($query, $params)->fetchAll('assoc');
+
+        $indexes = [];
+        foreach ($result as $index) {
+            // We can't use the dialect here as convertIndexDescription
+            // has complicated requirements
+            $indexData = $this->fetchAll(sprintf('pragma index_info(%s)', $this->quoteColumnName($index['name'])));
             $cols = [];
             foreach ($indexData as $indexItem) {
                 $cols[] = $indexItem['name'];
             }
-            $indexes[$index['name']] = $cols;
+            $indexes[$index['name']] = [
+                'origin' => $index['origin'],
+                'columns' => $cols,
+            ];
         }
 
         return $indexes;
@@ -1332,7 +1284,7 @@ PCRE_PATTERN;
         $matches = [];
 
         foreach ($indexes as $name => $index) {
-            $indexCols = array_map('strtolower', $index);
+            $indexCols = array_map('strtolower', $index['columns']);
             if ($columns == $indexCols) {
                 $matches[] = $name;
             }
@@ -1373,14 +1325,19 @@ PCRE_PATTERN;
     {
         $indexColumnArray = [];
         foreach ((array)$index->getColumns() as $column) {
-            $indexColumnArray[] = sprintf('`%s` ASC', $column);
+            $indexColumnArray[] = sprintf('%s ASC', $this->quoteColumnName($column));
         }
         $indexColumns = implode(',', $indexColumnArray);
+        $where = (string)$index->getWhere();
+        if ($where) {
+            $where = ' WHERE ' . $where;
+        }
         $sql = sprintf(
-            'CREATE %s ON %s (%s)',
+            'CREATE %s ON %s (%s)%s',
             $this->getIndexSqlDefinition($table, $index),
             $this->quoteTableName($table->getName()),
-            $indexColumns
+            $indexColumns,
+            $where,
         );
 
         return new AlterInstructions([], [$sql]);
@@ -1399,7 +1356,7 @@ PCRE_PATTERN;
                 $instructions->addPostStep(sprintf(
                     'DROP INDEX %s%s',
                     $schema,
-                    $this->quoteColumnName($indexName)
+                    $this->quoteColumnName($indexName),
                 ));
             }
         }
@@ -1429,7 +1386,7 @@ PCRE_PATTERN;
                 $instructions->addPostStep(sprintf(
                     'DROP INDEX %s%s',
                     $schema,
-                    $this->quoteColumnName($indexName)
+                    $this->quoteColumnName($indexName),
                 ));
         }
 
@@ -1466,8 +1423,7 @@ PCRE_PATTERN;
     protected function getPrimaryKey(string $tableName): array
     {
         $primaryKey = [];
-
-        $rows = $this->getTableInfo($tableName);
+        $rows = $this->getColumnData($tableName);
 
         foreach ($rows as $row) {
             if ($row['pk'] > 0) {
@@ -1486,14 +1442,14 @@ PCRE_PATTERN;
         if ($constraint !== null) {
             return preg_match(
                 "/,?\s*CONSTRAINT\s*" . $this->possiblyQuotedIdentifierRegex($constraint) . '\s*FOREIGN\s+KEY/is',
-                $this->getDeclaringSql($tableName)
+                $this->getDeclaringSql($tableName),
             ) === 1;
         }
 
         $columns = array_map('mb_strtolower', (array)$columns);
 
         foreach ($this->getForeignKeys($tableName) as $key) {
-            if (array_map('mb_strtolower', $key) === $columns) {
+            if (array_map('mb_strtolower', $key['columns']) === $columns) {
                 return true;
             }
         }
@@ -1511,13 +1467,20 @@ PCRE_PATTERN;
     {
         $foreignKeys = [];
 
-        $rows = $this->getTableInfo($tableName, 'foreign_key_list');
+        // Can't use the dialect here because describeForeignKeySql()
+        // doesn't fetch all metadata. If we improve the metadata query
+        // we can simplify here too.
+        $query = sprintf('PRAGMA foreign_key_list(%s)', $this->quoteTableName($tableName));
+        $rows = $this->fetchAll($query);
 
         foreach ($rows as $row) {
             if (!isset($foreignKeys[$row['id']])) {
-                $foreignKeys[$row['id']] = [];
+                $foreignKeys[$row['id']] = [
+                    'columns' => [],
+                    'table' => $row['table'],
+                ];
             }
-            $foreignKeys[$row['id']][$row['seq']] = $row['from'];
+            $foreignKeys[$row['id']]['columns'][$row['seq']] = $row['from'];
         }
 
         return $foreignKeys;
@@ -1534,7 +1497,9 @@ PCRE_PATTERN;
 
         $tableName = $table->getName();
         $instructions->addPostStep(function ($state) use ($column) {
-            $matchPattern = "/(`$column`)\s+(\w+(\(\d+\))?)\s+((NOT )?NULL)/";
+            $quotedColumn = preg_quote($column);
+            $columnPattern = "`{$quotedColumn}`|\"{$quotedColumn}\"|\[{$quotedColumn}\]";
+            $matchPattern = "/($columnPattern)\s+(\w+(\(\d+\))?)\s+((NOT )?NULL)/";
 
             $sql = $state['createSQL'];
 
@@ -1617,13 +1582,13 @@ PCRE_PATTERN;
                     $sql .= sprintf(
                         'DROP INDEX %s%s; ',
                         $schema,
-                        $this->quoteColumnName($indexName)
+                        $this->quoteColumnName($indexName),
                     );
                     $createIndexSQL = $this->getDeclaringIndexSQL($tableName, $indexName);
                     $sql .= preg_replace(
                         "/\b{$tableName}\b/",
                         $tmpTableName,
-                        $createIndexSQL
+                        $createIndexSQL,
                     );
                 }
             }
@@ -1666,7 +1631,7 @@ PCRE_PATTERN;
         if (!$this->hasForeignKey($tableName, $columns)) {
             throw new InvalidArgumentException(sprintf(
                 'No foreign key on column(s) `%s` exists',
-                implode(', ', $columns)
+                implode(', ', $columns),
             ));
         }
 
@@ -1678,9 +1643,9 @@ PCRE_PATTERN;
                 implode(
                     '\s*,\s*',
                     array_map(
-                        fn ($column) => $this->possiblyQuotedIdentifierRegex($column, false),
-                        $columns
-                    )
+                        fn($column) => $this->possiblyQuotedIdentifierRegex($column, false),
+                        $columns,
+                    ),
                 ),
             );
             $sql = preg_replace($search, '', (string)$state['createSQL']);
@@ -1871,16 +1836,15 @@ PCRE_PATTERN;
         } else {
             $def = 'INDEX';
         }
-        if (is_string($index->getName())) {
-            $indexName = $index->getName();
-        } else {
+        $indexName = $index->getName();
+        if (!is_string($indexName)) {
             $indexName = $table->getName() . '_';
             foreach ((array)$index->getColumns() as $column) {
                 $indexName .= $column . '_';
             }
             $indexName .= 'index';
         }
-        $def .= ' `' . $indexName . '`';
+        $def .= ' ' . $this->quoteColumnName($indexName);
 
         return $def;
     }
@@ -1902,8 +1866,8 @@ PCRE_PATTERN;
     protected function getForeignKeySqlDefinition(ForeignKey $foreignKey): string
     {
         $def = '';
-        if ($foreignKey->getConstraint()) {
-            $def .= ' CONSTRAINT ' . $this->quoteColumnName((string)$foreignKey->getConstraint());
+        if ($foreignKey->getName()) {
+            $def .= ' CONSTRAINT ' . $this->quoteColumnName((string)$foreignKey->getName());
         }
         $columnNames = [];
         foreach ($foreignKey->getColumns() as $column) {
