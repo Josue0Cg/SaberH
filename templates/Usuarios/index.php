@@ -4,6 +4,34 @@
  * @var iterable<\App\Model\Entity\Usuario> $usuarios
  */
 ?>
+<style>
+body {
+    background: linear-gradient(135deg, #c3cfe2, #dde5f2);
+    font-family: 'Trebuchet MS', sans-serif;
+}
+
+.usuarios, index, content {
+    background:linear-gradient(135deg,rgb(207, 227, 157),rgb(239, 245, 225) );
+}
+
+h3{
+    font-weight: bolder;
+    font-style: italic;
+}
+
+.button.float-right {
+    background: #c3cfe2;
+    border-color: rgb(207, 227, 157);
+    border-width: 2px;
+    color: #515761;
+    cursor: pointer; 
+    transition: box-shadow 0.3s ease;
+}
+
+.button.float-right:hover {
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2); 
+}
+</style>
 <div class="usuarios index content">
     <?= $this->Html->link(__('New Usuario'), ['action' => 'add'], ['class' => 'button float-right']) ?>
     <h3><?= __('Usuarios') ?></h3>
