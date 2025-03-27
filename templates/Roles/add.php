@@ -7,7 +7,7 @@
 
 <style>
 body {
-    background: linear-gradient(135deg, #c3cfe2, #dde5f2);
+    background: linear-gradient(135deg,rgb(195, 205, 221), #dde5f2);
     font-family: 'Trebuchet MS', sans-serif;
 }
 
